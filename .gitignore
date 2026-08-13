@@ -9,3 +9,7 @@ venv/
 # private working notes
 SESSION_NOTES.md
 .claude/
+
+slides.md
+SLIDES.md
+
