@@ -17,15 +17,16 @@ class LLMResponse:
 
 
 def _mock(prompt: str, system: str, max_tokens: int, model: str) -> LLMResponse:
-    reply = (
-        "[MOCK RESPONSE — add an API key in the sidebar to hit a real model] "
-        "This is a simulated answer used purely for demoing the cost math. "
-    ) * max(1, max_tokens // 40)
-    reply = reply[: max_tokens * 4]
+    """Simulate a response whose length scales with input, so demos show meaningful cost variance."""
+    input_tok = count_tokens(system) + count_tokens(prompt)
+    # Output roughly 1.2x input, floored at 40, capped at max_tokens
+    sim_out = max(40, min(int(input_tok * 1.2) + 20, max_tokens))
+    unit = "This is a simulated answer for demoing cost math. "
+    reply = "[MOCK — add an API key for a real response] " + (unit * (sim_out // 8 + 1))
     return LLMResponse(
         text=reply,
-        input_tokens=count_tokens(system) + count_tokens(prompt),
-        output_tokens=count_tokens(reply),
+        input_tokens=input_tok,
+        output_tokens=sim_out,
         model=model,
         mocked=True,
     )

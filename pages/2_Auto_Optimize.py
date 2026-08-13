@@ -29,6 +29,8 @@ with st.sidebar:
     )
     p = PRICING[target_model]
     st.caption(f"Input: ${p['in']} per million tokens. Output: ${p['out']} per million tokens.")
+    st.caption("Note: the target model is used only for cost math on this page. "
+               "The prompt optimizer runs on Groq (or OpenAI as fallback).")
 
     monthly_calls = st.number_input("Calls per month (for savings projection)",
                                     1_000, 10_000_000, 100_000, step=10_000)

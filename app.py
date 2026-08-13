@@ -36,13 +36,23 @@ with st.sidebar:
         f"Cached input: ${p['cached_in']} per million tokens"
     )
 
+    # Warn if selected model's provider has no matching key
+    required_provider = p["provider"]
+    if not st.session_state.api_keys[required_provider]:
+        available = [prov for prov, k in st.session_state.api_keys.items() if k]
+        if available:
+            msg = f"You picked **{model}** which needs a **{required_provider.upper()}** key, but you only have a **{available[0].upper()}** key. Runs will use a mock. Add a {required_provider} key, or switch model to one that matches your key."
+        else:
+            msg = f"No API key for **{required_provider.upper()}**. Runs will use a mock. Add a key below or switch to a Groq model (free key at console.groq.com)."
+        st.warning(msg)
+
     st.divider()
-    with st.expander("API keys (session only, never stored)"):
+    with st.expander("API keys (session only, never stored)", expanded=True):
         st.session_state.api_keys["openai"]    = st.text_input("OpenAI key",    type="password", value=st.session_state.api_keys["openai"])
         st.session_state.api_keys["anthropic"] = st.text_input("Anthropic key", type="password", value=st.session_state.api_keys["anthropic"])
         st.session_state.api_keys["google"]    = st.text_input("Google key",    type="password", value=st.session_state.api_keys["google"])
         st.session_state.api_keys["groq"]      = st.text_input("Groq key (free at console.groq.com)", type="password", value=st.session_state.api_keys["groq"])
-        st.caption("No key? The app will use a mock response. Cost math still works.")
+        st.caption("Groq is free. The Groq model in the dropdown is `llama-3.1-70b-versatile`.")
 
     st.divider()
     st.header("Assumptions")
@@ -190,6 +200,15 @@ if a and b:
     saved_per_call = a["cost"] - b["cost"]
     saved_pct = (saved_per_call / a["cost"] * 100) if a["cost"] > 0 else 0
     saved_monthly = saved_per_call * monthly_calls
+
+    if saved_per_call < 0:
+        st.error(
+            f"Version B costs MORE than Version A (by ${-saved_per_call:.5f} per call). "
+            "Check both prompts — the 'optimized' version added tokens somewhere. "
+            "Tip: shortening the system prompt usually helps most."
+        )
+    elif saved_pct == 0 and a["cost"] > 0:
+        st.info("Version B costs the same as Version A. Try shortening the system prompt or capping output.")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Savings per call", f"${saved_per_call:.5f}", f"{saved_pct:.1f}%")
