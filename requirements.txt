@@ -1,0 +1,8 @@
+streamlit>=1.36
+openai>=1.40
+anthropic>=0.34
+google-generativeai>=0.7
+groq>=0.9
+tiktoken>=0.7
+plotly>=5.22
+pandas>=2.2
