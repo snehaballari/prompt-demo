@@ -16,8 +16,8 @@ st.set_page_config(page_title="Prompt Cost Lab", page_icon="💸", layout="wide"
 # ---------- Session state ----------
 if "cache" not in st.session_state:
     st.session_state.cache = SemanticCache(threshold=0.55)
-if "keys" not in st.session_state:
-    st.session_state.keys = {"openai": "", "anthropic": "", "google": "", "groq": ""}
+if "api_keys" not in st.session_state:
+    st.session_state.api_keys = {"openai": "", "anthropic": "", "google": "", "groq": ""}
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
 
@@ -32,10 +32,10 @@ st.caption(
 with st.sidebar:
     st.header("⚙️  Setup")
     with st.expander("🔑 API keys (stored only in this session)", expanded=False):
-        st.session_state.keys["openai"]    = st.text_input("OpenAI key",     type="password", value=st.session_state.keys["openai"])
-        st.session_state.keys["anthropic"] = st.text_input("Anthropic key",  type="password", value=st.session_state.keys["anthropic"])
-        st.session_state.keys["google"]    = st.text_input("Google key",     type="password", value=st.session_state.keys["google"])
-        st.session_state.keys["groq"]      = st.text_input("Groq key (free)", type="password", value=st.session_state.keys["groq"])
+        st.session_state.api_keys["openai"]    = st.text_input("OpenAI key",     type="password", value=st.session_state.api_keys["openai"])
+        st.session_state.api_keys["anthropic"] = st.text_input("Anthropic key",  type="password", value=st.session_state.api_keys["anthropic"])
+        st.session_state.api_keys["google"]    = st.text_input("Google key",     type="password", value=st.session_state.api_keys["google"])
+        st.session_state.api_keys["groq"]      = st.text_input("Groq key (free)", type="password", value=st.session_state.api_keys["groq"])
         st.caption("Leave blank to use mocked responses — cost math still works.")
 
     model = st.selectbox(
@@ -127,7 +127,7 @@ def compute(prompt: str, system: str, model: str, opts: dict) -> dict:
             "mocked": False,
         }
 
-    resp = call(used_model, opt_prompt, system, max_out, st.session_state.keys)
+    resp = call(used_model, opt_prompt, system, max_out, st.session_state.api_keys)
     opt_cost = cost(used_model, resp.input_tokens, resp.output_tokens, cached_in_tok=cached_in)
 
     if opts["semcache"]:
