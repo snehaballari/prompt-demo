@@ -1,223 +1,232 @@
-"""Prompt Cost Lab — live demo of 5 LLM cost-optimization techniques."""
+"""Prompt Cost Lab — compare two versions of a prompt side-by-side."""
 from __future__ import annotations
 import streamlit as st
-import pandas as pd
 import plotly.graph_objects as go
 
-from pricing import PRICING, MODEL_TIERS, cost
-from optimizations import (
-    count_tokens, apply_prompt_cache, route_model,
-    SemanticCache, trim_context, output_cap,
-)
+from pricing import PRICING, cost
+from optimizations import count_tokens
 from providers import call
 
-st.set_page_config(page_title="Prompt Cost Lab", page_icon="💸", layout="wide")
+st.set_page_config(page_title="Prompt Cost Lab", layout="wide")
 
 # ---------- Session state ----------
-if "cache" not in st.session_state:
-    st.session_state.cache = SemanticCache(threshold=0.55)
 if "api_keys" not in st.session_state:
     st.session_state.api_keys = {"openai": "", "anthropic": "", "google": "", "groq": ""}
-if "last_result" not in st.session_state:
-    st.session_state.last_result = None
+if "result_a" not in st.session_state:
+    st.session_state.result_a = None
+if "result_b" not in st.session_state:
+    st.session_state.result_b = None
 
 # ---------- Header ----------
-st.title("💸 Prompt Cost Lab")
-st.caption(
-    "Same model. Same product. Same users. **Cut LLM cost by 70–95%** "
-    "with 5 techniques you can toggle live."
+st.title("Prompt Cost Lab")
+st.write(
+    "Write a prompt on the left. Write a more efficient version on the right. "
+    "Run both. See exactly how many tokens each used and what it cost."
 )
 
-# ---------- Sidebar: keys, model, toggles ----------
+# ---------- Sidebar ----------
 with st.sidebar:
-    st.header("⚙️  Setup")
-    with st.expander("🔑 API keys (stored only in this session)", expanded=False):
-        st.session_state.api_keys["openai"]    = st.text_input("OpenAI key",     type="password", value=st.session_state.api_keys["openai"])
-        st.session_state.api_keys["anthropic"] = st.text_input("Anthropic key",  type="password", value=st.session_state.api_keys["anthropic"])
-        st.session_state.api_keys["google"]    = st.text_input("Google key",     type="password", value=st.session_state.api_keys["google"])
-        st.session_state.api_keys["groq"]      = st.text_input("Groq key (free)", type="password", value=st.session_state.api_keys["groq"])
-        st.caption("Leave blank to use mocked responses — cost math still works.")
+    st.header("Setup")
 
-    model = st.selectbox(
-        "Model",
-        list(PRICING.keys()),
-        index=list(PRICING.keys()).index("gpt-4o"),
-    )
+    model = st.selectbox("Model", list(PRICING.keys()), index=list(PRICING.keys()).index("gpt-4o"))
     p = PRICING[model]
-    st.caption(f"**${p['in']}/M in · ${p['out']}/M out · ${p['cached_in']}/M cached**")
-
-    st.divider()
-    st.header("🎛  Optimizations")
-    opt_cache   = st.toggle("1️⃣  Prompt caching",   value=False, help="Discount input tokens that come from a repeated system prompt (Anthropic 90%, OpenAI 50%).")
-    opt_route   = st.toggle("2️⃣  Model routing",    value=False, help="Auto-classify prompt complexity; route simple prompts to the cheaper model in the same family.")
-    opt_semcache= st.toggle("3️⃣  Semantic cache",   value=False, help="Return a cached answer when a new prompt is >85% similar to a previous one.")
-    opt_trim    = st.toggle("4️⃣  Context trimming", value=False, help="Trim very long input to the last 500 tokens.")
-    opt_output  = st.toggle("5️⃣  Output control",   value=False, help="Cap max_tokens at 150 so the model doesn't ramble.")
-
-    st.divider()
-    if st.button("🧹 Clear semantic cache"):
-        st.session_state.cache.clear()
-        st.success("Cache cleared.")
-
-# ---------- Main area ----------
-left, right = st.columns([1, 1])
-
-with left:
-    st.subheader("📝 Prompt")
-    system = st.text_area(
-        "System prompt (often reused → benefits from caching)",
-        value=("You are a helpful customer-support assistant for Acme Cloud. "
-               "Answer briefly, cite doc pages when possible, and never invent SKUs. "
-               "Follow the style guide: friendly, plain English, no jargon. " * 6),
-        height=120,
+    st.caption(
+        f"Input: ${p['in']} per million tokens  \n"
+        f"Output: ${p['out']} per million tokens  \n"
+        f"Cached input: ${p['cached_in']} per million tokens"
     )
-    examples = {
-        "— pick an example —": "",
-        "Short factual Q":  "What's the capital of France?",
-        "Repetitive support ticket": "How do I reset my Acme Cloud password?",
-        "Long analysis":    ("Analyze the following architecture and compare the tradeoffs "
-                             "of moving from a monolith to microservices step by step, "
-                             "considering cost, latency, team topology, and deployability. "
-                             "Explain why each factor matters."),
-    }
-    picked = st.selectbox("Preloaded examples", list(examples.keys()))
-    if "prompt_text" not in st.session_state or picked != "— pick an example —":
-        st.session_state.prompt_text = examples[picked] or st.session_state.get("prompt_text", "")
-    prompt = st.text_area("User prompt", value=st.session_state.prompt_text, height=160, key="prompt_area")
 
-    run = st.button("▶️  Run", type="primary", use_container_width=True)
+    st.divider()
+    with st.expander("API keys (session only, never stored)"):
+        st.session_state.api_keys["openai"]    = st.text_input("OpenAI key",    type="password", value=st.session_state.api_keys["openai"])
+        st.session_state.api_keys["anthropic"] = st.text_input("Anthropic key", type="password", value=st.session_state.api_keys["anthropic"])
+        st.session_state.api_keys["google"]    = st.text_input("Google key",    type="password", value=st.session_state.api_keys["google"])
+        st.session_state.api_keys["groq"]      = st.text_input("Groq key (free at console.groq.com)", type="password", value=st.session_state.api_keys["groq"])
+        st.caption("No key? The app will use a mock response. Cost math still works.")
 
-with right:
-    st.subheader("💰 Cost breakdown")
-    meter_placeholder = st.empty()
-    chart_placeholder = st.empty()
-    response_placeholder = st.container()
+    st.divider()
+    st.header("Assumptions")
+    monthly_calls = st.number_input("Calls per month (for savings projection)", 1_000, 10_000_000, 100_000, step=10_000)
 
 
-def compute(prompt: str, system: str, model: str, opts: dict) -> dict:
-    """Compute baseline and optimized cost + call the model for the optimized path."""
-    provider = PRICING[model]["provider"]
+# ---------- Example bank ----------
+EXAMPLES = {
+    "-- pick a before/after example --": None,
+    "1. Bloated system prompt (caching)": {
+        "sys_a": ("You are a helpful customer-support assistant for Acme Cloud. Always be friendly. "
+                  "Never invent SKUs. Cite documentation pages when possible. Follow the style guide: "
+                  "friendly, plain English, no jargon. " * 6),
+        "user_a": "How do I reset my Acme Cloud password?",
+        "sys_b": "Acme Cloud support assistant. Cite docs. No made-up SKUs.",
+        "user_b": "How do I reset my Acme Cloud password?",
+        "note": "Trim the system prompt. Same intent, 90% fewer tokens.",
+    },
+    "2. Wrong model for the job (routing)": {
+        "sys_a": "You are a helpful assistant.",
+        "user_a": "What is the capital of France?",
+        "sys_b": "You are a helpful assistant.",
+        "user_b": "What is the capital of France?",
+        "note": "The prompt is fine — but a factual one-liner does not need the flagship model. Switch the sidebar model to a cheaper one (e.g. gpt-4o-mini or claude-haiku-4-5) for Version B.",
+    },
+    "3. Rambling instructions (output control)": {
+        "sys_a": "You are a helpful assistant. Give thorough, detailed answers.",
+        "user_a": "Explain what HTTPS is.",
+        "sys_b": "You are a helpful assistant. Answer in one short sentence.",
+        "user_b": "Explain what HTTPS is in one sentence.",
+        "note": "Cut output length in both the system prompt and the user prompt.",
+    },
+    "4. Stuffed context (trimming)": {
+        "sys_a": "You are a helpful assistant. Use the following context.",
+        "user_a": ("CONTEXT:\n" + ("Acme was founded in 2005. It has 500 employees. HQ in Austin. " * 40)
+                   + "\n\nQUESTION: When was Acme founded?"),
+        "sys_b": "You are a helpful assistant.",
+        "user_b": "Acme was founded in 2005. When was Acme founded?",
+        "note": "Keep only the sentence relevant to the question. Massive input savings.",
+    },
+    "5. Free-text where JSON works (structured output)": {
+        "sys_a": "You are a helpful assistant.",
+        "user_a": "Tell me the pros and cons of remote work.",
+        "sys_b": "You are a helpful assistant. Respond in JSON with keys 'pros' (list of 3 strings) and 'cons' (list of 3 strings). No prose.",
+        "user_b": "Pros and cons of remote work.",
+        "note": "Structured output caps verbosity and makes the response cheaper and easier to use.",
+    },
+}
 
-    # --- Baseline: no optimizations ---
-    base_in = count_tokens(system) + count_tokens(prompt)
-    base_out_cap = 1000
-    base_cost = cost(model, base_in, base_out_cap)
 
-    # --- Optimized path ---
-    opt_prompt, saved = trim_context(prompt, opts["trim"])
-    used_model = route_model(opt_prompt, provider, opts["route"], default=model)
-    cached_in = apply_prompt_cache(system, opts["cache"])
-    max_out = output_cap(opts["output"])
+# ---------- Load example ----------
+st.divider()
+picked = st.selectbox("Load a before/after example", list(EXAMPLES.keys()))
+if picked and EXAMPLES[picked]:
+    ex = EXAMPLES[picked]
+    st.session_state.sys_a  = ex["sys_a"]
+    st.session_state.user_a = ex["user_a"]
+    st.session_state.sys_b  = ex["sys_b"]
+    st.session_state.user_b = ex["user_b"]
+    st.session_state.note   = ex["note"]
 
-    # Semantic cache
-    cache_hit = None
-    if opts["semcache"]:
-        cache_hit = st.session_state.cache.lookup(opt_prompt)
+if "sys_a" not in st.session_state:
+    st.session_state.sys_a = "You are a helpful assistant."
+    st.session_state.user_a = "Write two paragraphs about the history of the Eiffel Tower."
+    st.session_state.sys_b = "You are a helpful assistant. Be concise."
+    st.session_state.user_b = "In 2 short sentences: history of the Eiffel Tower."
+    st.session_state.note = ""
 
-    if cache_hit is not None:
-        return {
-            "baseline_cost": base_cost,
-            "optimized_cost": 0.0,
-            "baseline_tokens": (base_in, base_out_cap),
-            "optimized_tokens": (0, 0),
-            "used_model": used_model,
-            "cache_hit": cache_hit,
-            "response": cache_hit.response,
-            "trimmed_saved": saved,
-            "mocked": False,
-        }
+if st.session_state.note:
+    st.info(st.session_state.note)
 
-    resp = call(used_model, opt_prompt, system, max_out, st.session_state.api_keys)
-    opt_cost = cost(used_model, resp.input_tokens, resp.output_tokens, cached_in_tok=cached_in)
 
-    if opts["semcache"]:
-        st.session_state.cache.put(opt_prompt, resp.text)
+# ---------- Two side-by-side prompt panels ----------
+col_a, col_b = st.columns(2, gap="large")
 
+
+def prompt_panel(label: str, key_prefix: str, run_key: str):
+    st.subheader(label)
+    sys_p = st.text_area("System prompt", key=f"sys_{key_prefix}", height=110)
+    usr_p = st.text_area("User prompt",   key=f"user_{key_prefix}", height=140)
+
+    in_tok_estimate = count_tokens(sys_p) + count_tokens(usr_p)
+    st.caption(f"Input tokens (estimate): {in_tok_estimate}")
+
+    return st.button(f"Run {label}", key=run_key, type="primary", use_container_width=True), sys_p, usr_p
+
+
+with col_a:
+    run_a, sys_a, user_a = prompt_panel("Version A (baseline)", "a", "run_a")
+
+with col_b:
+    run_b, sys_b, user_b = prompt_panel("Version B (optimized)", "b", "run_b")
+
+
+# ---------- Run handlers ----------
+def do_call(sys_p: str, user_p: str) -> dict:
+    resp = call(model, user_p, sys_p, max_tokens=1000, keys=st.session_state.api_keys)
     return {
-        "baseline_cost": base_cost,
-        "optimized_cost": opt_cost,
-        "baseline_tokens": (base_in, base_out_cap),
-        "optimized_tokens": (resp.input_tokens, resp.output_tokens),
-        "used_model": used_model,
-        "cache_hit": None,
-        "response": resp.text,
-        "trimmed_saved": saved,
+        "text": resp.text,
+        "input_tokens": resp.input_tokens,
+        "output_tokens": resp.output_tokens,
+        "cost": cost(model, resp.input_tokens, resp.output_tokens),
         "mocked": resp.mocked,
+        "model": model,
     }
 
 
-def render(result: dict, opts: dict):
-    b, o = result["baseline_cost"], result["optimized_cost"]
-    saved_pct = ((b - o) / b * 100) if b > 0 else 0
+if run_a:
+    with st.spinner("Running Version A..."):
+        st.session_state.result_a = do_call(sys_a, user_a)
 
-    with meter_placeholder.container():
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Baseline",  f"${b:.5f}")
-        c2.metric("Optimized", f"${o:.5f}", f"-{saved_pct:.1f}%")
-        c3.metric("Monthly savings\n(100k calls)", f"${(b - o) * 100_000:,.0f}")
+if run_b:
+    with st.spinner("Running Version B..."):
+        st.session_state.result_b = do_call(sys_b, user_b)
 
-        badges = []
-        if opts["cache"]:    badges.append("🧊 caching")
-        if opts["route"]:    badges.append(f"🎯 routed → `{result['used_model']}`")
-        if opts["semcache"] and result["cache_hit"]:
-            badges.append(f"⚡ cache hit (sim={result['cache_hit'].similarity:.2f})")
-        if opts["trim"] and result["trimmed_saved"]:
-            badges.append(f"✂️  trimmed {result['trimmed_saved']} tokens")
-        if opts["output"]:   badges.append("📏 output capped at 150")
-        if badges:
-            st.info(" · ".join(badges))
 
-    # Chart
+# ---------- Results panels ----------
+def result_panel(container, result: dict | None, label: str):
+    with container:
+        if result is None:
+            st.caption(f"Run {label} to see results.")
+            return
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Input tokens",  result["input_tokens"])
+        m2.metric("Output tokens", result["output_tokens"])
+        m3.metric("Cost per call", f"${result['cost']:.5f}")
+        with st.expander("Model response"):
+            if result["mocked"]:
+                st.warning("Using MOCK response (no API key). Cost math is still real.")
+            st.write(result["text"])
+
+
+st.divider()
+res_col_a, res_col_b = st.columns(2, gap="large")
+result_panel(res_col_a, st.session_state.result_a, "Version A")
+result_panel(res_col_b, st.session_state.result_b, "Version B")
+
+
+# ---------- Comparison ----------
+a, b = st.session_state.result_a, st.session_state.result_b
+if a and b:
+    st.divider()
+    st.subheader("Comparison")
+
+    saved_per_call = a["cost"] - b["cost"]
+    saved_pct = (saved_per_call / a["cost"] * 100) if a["cost"] > 0 else 0
+    saved_monthly = saved_per_call * monthly_calls
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Savings per call", f"${saved_per_call:.5f}", f"{saved_pct:.1f}%")
+    c2.metric("Input token change",  f"{b['input_tokens'] - a['input_tokens']:+}")
+    c3.metric(f"Monthly savings ({monthly_calls:,} calls)", f"${saved_monthly:,.2f}")
+
     fig = go.Figure(data=[
-        go.Bar(name="Baseline",  x=["Input tok", "Output tok", "Cost ($)"],
-               y=[result["baseline_tokens"][0], result["baseline_tokens"][1], b],
+        go.Bar(name="Version A", x=["Input tokens", "Output tokens", "Cost per call (x1000)"],
+               y=[a["input_tokens"], a["output_tokens"], a["cost"] * 1000],
                marker_color="#ef4444"),
-        go.Bar(name="Optimized", x=["Input tok", "Output tok", "Cost ($)"],
-               y=[result["optimized_tokens"][0], result["optimized_tokens"][1], o],
+        go.Bar(name="Version B", x=["Input tokens", "Output tokens", "Cost per call (x1000)"],
+               y=[b["input_tokens"], b["output_tokens"], b["cost"] * 1000],
                marker_color="#22c55e"),
     ])
-    fig.update_layout(barmode="group", height=280, margin=dict(l=10, r=10, t=30, b=10),
-                      legend=dict(orientation="h", y=1.1))
-    chart_placeholder.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(barmode="group", height=320, margin=dict(l=10, r=10, t=30, b=10),
+                      legend=dict(orientation="h", y=1.15))
+    st.plotly_chart(fig, use_container_width=True)
 
-    with response_placeholder:
-        st.subheader("🗨️ Response")
-        if result["mocked"]:
-            st.warning("Using MOCK response — add an API key in the sidebar to hit a real model.")
-        st.write(result["response"])
 
-# ---------- Run ----------
-if run and prompt.strip():
-    opts = {"cache": opt_cache, "route": opt_route, "semcache": opt_semcache,
-            "trim": opt_trim, "output": opt_output}
-    with st.spinner("Calling model…"):
-        result = compute(prompt, system, model, opts)
-    st.session_state.last_result = (result, opts)
-
-if st.session_state.last_result:
-    render(*st.session_state.last_result)
-else:
-    with meter_placeholder.container():
-        st.info("👈 Pick a model, toggle optimizations, and hit **Run**.")
-
-# ---------- Bulk simulator ----------
+# ---------- Techniques reference ----------
 st.divider()
-st.subheader("📈 Simulate 100 calls / month projection")
-sim_col1, sim_col2 = st.columns([1, 3])
-with sim_col1:
-    n_calls = st.number_input("Calls / month", 1000, 10_000_000, 100_000, step=10_000)
-    if st.button("Run projection"):
-        if st.session_state.last_result:
-            r, _ = st.session_state.last_result
-            df = pd.DataFrame({
-                "Scenario": ["Baseline", "Optimized"],
-                "Monthly cost ($)": [r["baseline_cost"] * n_calls, r["optimized_cost"] * n_calls],
-            })
-            with sim_col2:
-                st.dataframe(df, hide_index=True, use_container_width=True)
-                fig = go.Figure(go.Bar(x=df["Scenario"], y=df["Monthly cost ($)"],
-                                       marker_color=["#ef4444", "#22c55e"]))
-                fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("Run a prompt first.")
+with st.expander("Five techniques to try (reference)"):
+    st.markdown("""
+**1. Prompt caching** — Repeated system prompts get a discount when marked cacheable.
+Anthropic gives roughly 90% off cached input tokens. OpenAI roughly 50%.
+*Try it:* keep your system prompt identical across calls and add the provider's cache marker.
+
+**2. Model routing** — Send simple prompts to a cheaper model in the same family.
+gpt-4o-mini is ~16x cheaper than gpt-4o. claude-haiku is ~4x cheaper than claude-sonnet.
+*Try it:* switch the sidebar model for Version B and compare.
+
+**3. Prompt compression** — Rewrite verbose instructions in fewer words. Trim redundant style rules.
+*Try it:* shorten the system prompt in Version B.
+
+**4. Context trimming** — Do not send the entire chat history or full documents. Send only the relevant slice, or a summary.
+*Try it:* delete irrelevant context from the user prompt in Version B.
+
+**5. Output control** — Cap max_tokens and use JSON mode. Output tokens usually cost 3-5x more than input.
+*Try it:* tell the model to answer in one short sentence, or in JSON with fixed keys.
+""")
